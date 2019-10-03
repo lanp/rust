@@ -216,6 +216,7 @@ fn mir_validated(
         // What we need to run borrowck etc.
         &qualify_and_promote_pass,
         &simplify::SimplifyCfg::new("qualify-consts"),
+        &ensure_predecessors_cache::EnsurePredecessorsCache::new("qualify-consts"),
     ]);
     let promoted = qualify_and_promote_pass.promoted.into_inner();
     (tcx.alloc_steal_mir(body), tcx.alloc_steal_promoted(promoted))
@@ -261,6 +262,8 @@ fn run_optimization_passes<'tcx>(
         &uniform_array_move_out::RestoreSubsliceArrayMoveOut::new(tcx),
         &inline::Inline,
 
+        // State transform requires that predecessors have been predefined
+        &ensure_predecessors_cache::EnsurePredecessorsCache::new("pre-state-transform"),
         // Lowering generator control-flow and variables
         // has to happen before we do anything else to them.
         &generator::StateTransform,
@@ -276,7 +279,7 @@ fn run_optimization_passes<'tcx>(
         &simplify::SimplifyLocals,
 
         &add_call_guards::CriticalCallEdges,
-        &ensure_predecessors_cache::EnsurePredecessorsCache,
+        &ensure_predecessors_cache::EnsurePredecessorsCache::new("before-opt-dump"),
         &dump_mir::Marker("PreCodegen"),
     ]);
 }
