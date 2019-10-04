@@ -1883,14 +1883,14 @@ fn remove_drop_and_storage_dead_on_promoted_locals(
 ) {
     debug!("run_pass: promoted_temps={:?}", promoted_temps);
 
-    for bb in body.basic_blocks().indices() {
-        body.basic_blocks_mut()[bb].statements.retain(|statement| {
+    for block in body.basic_blocks_mut() {
+        block.statements.retain(|statement| {
             match statement.kind {
                 StatementKind::StorageDead(index) => !promoted_temps.contains(index),
                 _ => true
             }
         });
-        let terminator = body.basic_block_terminator_mut(bb);
+        let terminator = block.terminator_mut();
         match &terminator.kind {
             TerminatorKind::Drop {
                 location,
