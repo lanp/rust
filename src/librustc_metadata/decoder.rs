@@ -926,7 +926,7 @@ impl<'a, 'tcx> CrateMetadata {
 
     crate fn get_optimized_mir(&self, tcx: TyCtxt<'tcx>, id: DefIndex) -> Body<'tcx> {
         self.root.per_def.mir.get(self, id)
-            .filter(|_| !self.is_proc_macro(id))
+        self.entry_unless_proc_macro(id)
             .unwrap_or_else(|| {
                 bug!("get_optimized_mir: missing MIR for `{:?}`", self.local_def_id(id))
             })

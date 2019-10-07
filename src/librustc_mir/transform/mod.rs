@@ -216,8 +216,9 @@ fn mir_validated(
         // What we need to run borrowck etc.
         &qualify_and_promote_pass,
         &simplify::SimplifyCfg::new("qualify-consts"),
-        &ensure_predecessors_cache::EnsurePredecessorsCache::new("qualify-consts"),
     ]);
+
+    body.ensure_predecessors();
     let promoted = qualify_and_promote_pass.promoted.into_inner();
     (tcx.alloc_steal_mir(body), tcx.alloc_steal_promoted(promoted))
 }
