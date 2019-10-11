@@ -1,6 +1,6 @@
 use rustc::ty::{self, Ty, TypeFoldable, UpvarSubsts, Instance};
 use rustc::ty::layout::{TyLayout, HasTyCtxt, FnTypeExt};
-use rustc::mir::{self, Body};
+use rustc::mir::{self, Body, BodyCache};
 use rustc::session::config::DebugInfo;
 use rustc_target::abi::call::{FnType, PassMode};
 use rustc_target::abi::{Variants, VariantIdx};
@@ -26,7 +26,7 @@ use self::operand::{OperandRef, OperandValue};
 pub struct FunctionCx<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
     instance: Instance<'tcx>,
 
-    mir: &'a mir::Body<'tcx>,
+    mir: Option<&'a mut BodyCache<&'a mir::Body<'tcx>>>,
 
     debug_context: FunctionDebugContext<Bx::DIScope>,
 
@@ -124,7 +124,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             // Walk up the macro expansion chain until we reach a non-expanded span.
             // We also stop at the function body level because no line stepping can occur
             // at the level above that.
-            let span = syntax_pos::hygiene::walk_chain(source_info.span, self.mir.span.ctxt());
+            let span = syntax_pos::hygiene::walk_chain(source_info.span, self.mir.as_ref().unwrap().span.ctxt());
             let scope = self.scope_metadata_for_loc(source_info.scope, span.lo());
             // Use span of the outermost expansion site, while keeping the original lexical scope.
             (scope, span)
@@ -184,7 +184,7 @@ impl<'a, 'tcx, V: CodegenObject> LocalRef<'tcx, V> {
 pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     cx: &'a Bx::CodegenCx,
     llfn: Bx::Function,
-    mir: &'a Body<'tcx>,
+    mir: &'a mut BodyCache<&'a Body<'tcx>>,
     instance: Instance<'tcx>,
     sig: ty::FnSig<'tcx>,
 ) {
@@ -221,7 +221,7 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
 
     let mut fx = FunctionCx {
         instance,
-        mir,
+        mir: Some(mir),
         llfn,
         fn_ty,
         cx,
@@ -236,7 +236,7 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         debug_context,
     };
 
-    let memory_locals = analyze::non_ssa_locals(&fx);
+    let memory_locals = analyze::non_ssa_locals(&mut fx);
 
     // Allocate variable and temp allocas
     fx.locals = {
@@ -433,8 +433,8 @@ fn arg_local_refs<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         None
     };
 
-    mir.args_iter().enumerate().map(|(arg_index, local)| {
-        let arg_decl = &mir.local_decls[local];
+    mir.unwrap().args_iter().enumerate().map(|(arg_index, local)| {
+        let arg_decl = &mir.unwrap().local_decls[local];
 
         // FIXME(eddyb) don't allocate a `String` unless it gets used.
         let name = if let Some(name) = arg_decl.name {
@@ -443,7 +443,7 @@ fn arg_local_refs<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
             format!("{:?}", local)
         };
 
-        if Some(local) == mir.spread_arg {
+        if Some(local) == mir.unwrap().spread_arg {
             // This argument (e.g., the last argument in the "rust-call" ABI)
             // is a tuple that was spread at the ABI level and now we have
             // to reconstruct it into a tuple local variable, from multiple
@@ -578,7 +578,7 @@ fn arg_local_refs<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
             bx.store_fn_arg(arg, &mut llarg_idx, tmp);
             tmp
         };
-        let upvar_debuginfo = &mir.__upvar_debuginfo_codegen_only_do_not_use;
+        let upvar_debuginfo = &mir.unwrap().__upvar_debuginfo_codegen_only_do_not_use;
         arg_scope.map(|scope| {
             // Is this a regular argument?
             if arg_index > 0 || upvar_debuginfo.is_empty() {
@@ -633,7 +633,7 @@ fn arg_local_refs<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
                         (None, i, upvar.debug_name, upvar.by_ref, ty, scope, DUMMY_SP)
                     });
 
-                let generator_fields = mir.generator_layout.as_ref().map(|generator_layout| {
+                let generator_fields = mir.unwrap().generator_layout.as_ref().map(|generator_layout| {
                     let (def_id, gen_substs) = match closure_layout.ty.kind {
                         ty::Generator(def_id, substs, _) => (def_id, substs),
                         _ => bug!("generator layout without generator substs"),
