@@ -26,7 +26,7 @@ use self::operand::{OperandRef, OperandValue};
 pub struct FunctionCx<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
     instance: Instance<'tcx>,
 
-    mir: Option<&'a mut BodyCache<&'a mir::Body<'tcx>>>,
+//    mir: Option<&'a mut BodyCache<&'a mir::Body<'tcx>>>,
 
     debug_context: FunctionDebugContext<Bx::DIScope>,
 
@@ -97,13 +97,14 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
     pub fn set_debug_loc(
         &mut self,
         bx: &mut Bx,
-        source_info: mir::SourceInfo
+        source_info: mir::SourceInfo,
+        mir: &Body<'_>
     ) {
-        let (scope, span) = self.debug_loc(source_info);
+        let (scope, span) = self.debug_loc(source_info, mir);
         bx.set_source_location(&mut self.debug_context, scope, span);
     }
 
-    pub fn debug_loc(&self, source_info: mir::SourceInfo) -> (Option<Bx::DIScope>, Span) {
+    pub fn debug_loc(&self, source_info: mir::SourceInfo, mir: &Body<'_>) -> (Option<Bx::DIScope>, Span) {
         // Bail out if debug info emission is not enabled.
         match self.debug_context {
             FunctionDebugContext::DebugInfoDisabled |
@@ -124,7 +125,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             // Walk up the macro expansion chain until we reach a non-expanded span.
             // We also stop at the function body level because no line stepping can occur
             // at the level above that.
-            let span = syntax_pos::hygiene::walk_chain(source_info.span, self.mir.as_ref().unwrap().span.ctxt());
+            let span = syntax_pos::hygiene::walk_chain(source_info.span, mir.span.ctxt());
             let scope = self.scope_metadata_for_loc(source_info.scope, span.lo());
             // Use span of the outermost expansion site, while keeping the original lexical scope.
             (scope, span)
@@ -184,7 +185,7 @@ impl<'a, 'tcx, V: CodegenObject> LocalRef<'tcx, V> {
 pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     cx: &'a Bx::CodegenCx,
     llfn: Bx::Function,
-    mir: &'a mut BodyCache<&'a Body<'tcx>>,
+    mut mir: BodyCache<&'a Body<'tcx>>,
     instance: Instance<'tcx>,
     sig: ty::FnSig<'tcx>,
 ) {
@@ -193,7 +194,7 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     let fn_ty = FnType::new(cx, sig, &[]);
     debug!("fn_ty: {:?}", fn_ty);
     let mut debug_context =
-        cx.create_function_debug_context(instance, sig, llfn, mir);
+        cx.create_function_debug_context(instance, sig, llfn, &mir);
     let mut bx = Bx::new_block(cx, llfn, "start");
 
     if mir.basic_blocks().iter().any(|bb| bb.is_cleanup) {
@@ -216,12 +217,12 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         }).collect();
 
     // Compute debuginfo scopes from MIR scopes.
-    let scopes = cx.create_mir_scopes(mir, &mut debug_context);
-    let (landing_pads, funclets) = create_funclets(mir, &mut bx, &cleanup_kinds, &block_bxs);
+    let scopes = cx.create_mir_scopes(&mir, &mut debug_context);
+    let (landing_pads, funclets) = create_funclets(&mir, &mut bx, &cleanup_kinds, &block_bxs);
 
     let mut fx = FunctionCx {
         instance,
-        mir: Some(mir),
+//        mir: Some(mir),
         llfn,
         fn_ty,
         cx,
@@ -236,11 +237,11 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         debug_context,
     };
 
-    let memory_locals = analyze::non_ssa_locals(&mut fx);
+    let memory_locals = analyze::non_ssa_locals(&mut fx, &mut mir);
 
     // Allocate variable and temp allocas
     fx.locals = {
-        let args = arg_local_refs(&mut bx, &fx, &memory_locals);
+        let args = arg_local_refs(&mut bx, &fx, &mir, &memory_locals);
 
         let mut allocate_local = |local| {
             let decl = &mir.local_decls[local];
@@ -269,10 +270,12 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
                     let place = PlaceRef::alloca(&mut bx, layout);
                     bx.set_var_name(place.llval, name);
                     if dbg {
-                        let (scope, span) = fx.debug_loc(mir::SourceInfo {
-                            span: decl.source_info.span,
-                            scope: decl.visibility_scope,
-                        });
+                        let (scope, span) = fx.debug_loc(
+                            mir::SourceInfo {
+                                span: decl.source_info.span,
+                                scope: decl.visibility_scope
+                            },
+                            &mir);
                         bx.declare_local(&fx.debug_context, name, layout.ty, scope.unwrap(),
                             VariableAccess::DirectVariable { alloca: place.llval },
                             VariableKind::LocalVariable, span);
@@ -329,7 +332,7 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     // Codegen the body of each block using reverse postorder
     for (bb, _) in rpo {
         visited.insert(bb.index());
-        fx.codegen_block(bb);
+        fx.codegen_block(bb, &mir);
     }
 
     // Remove blocks that haven't been visited, or have no
@@ -345,8 +348,8 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     }
 }
 
-fn create_funclets<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
-    mir: &'a Body<'tcx>,
+fn create_funclets<'a, 'b, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
+    mir: &'b Body<'tcx>,
     bx: &mut Bx,
     cleanup_kinds: &IndexVec<mir::BasicBlock, CleanupKind>,
     block_bxs: &IndexVec<mir::BasicBlock, Bx::BasicBlock>,
@@ -418,9 +421,9 @@ fn create_funclets<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
 fn arg_local_refs<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     bx: &mut Bx,
     fx: &FunctionCx<'a, 'tcx, Bx>,
+    mir: &Body<'tcx>,
     memory_locals: &BitSet<mir::Local>,
 ) -> Vec<LocalRef<'tcx, Bx::Value>> {
-    let mir = fx.mir;
     let tcx = fx.cx.tcx();
     let mut idx = 0;
     let mut llarg_idx = fx.fn_ty.ret.is_indirect() as usize;
@@ -433,8 +436,8 @@ fn arg_local_refs<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         None
     };
 
-    mir.unwrap().args_iter().enumerate().map(|(arg_index, local)| {
-        let arg_decl = &mir.unwrap().local_decls[local];
+    mir.args_iter().enumerate().map(|(arg_index, local)| {
+        let arg_decl = &mir.local_decls[local];
 
         // FIXME(eddyb) don't allocate a `String` unless it gets used.
         let name = if let Some(name) = arg_decl.name {
@@ -443,7 +446,7 @@ fn arg_local_refs<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
             format!("{:?}", local)
         };
 
-        if Some(local) == mir.unwrap().spread_arg {
+        if Some(local) == mir.spread_arg {
             // This argument (e.g., the last argument in the "rust-call" ABI)
             // is a tuple that was spread at the ABI level and now we have
             // to reconstruct it into a tuple local variable, from multiple
@@ -578,7 +581,7 @@ fn arg_local_refs<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
             bx.store_fn_arg(arg, &mut llarg_idx, tmp);
             tmp
         };
-        let upvar_debuginfo = &mir.unwrap().__upvar_debuginfo_codegen_only_do_not_use;
+        let upvar_debuginfo = &mir.__upvar_debuginfo_codegen_only_do_not_use;
         arg_scope.map(|scope| {
             // Is this a regular argument?
             if arg_index > 0 || upvar_debuginfo.is_empty() {
@@ -633,7 +636,7 @@ fn arg_local_refs<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
                         (None, i, upvar.debug_name, upvar.by_ref, ty, scope, DUMMY_SP)
                     });
 
-                let generator_fields = mir.unwrap().generator_layout.as_ref().map(|generator_layout| {
+                let generator_fields = mir.generator_layout.as_ref().map(|generator_layout| {
                     let (def_id, gen_substs) = match closure_layout.ty.kind {
                         ty::Generator(def_id, substs, _) => (def_id, substs),
                         _ => bug!("generator layout without generator substs"),
@@ -653,10 +656,12 @@ fn arg_local_refs<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
                                         __local_debuginfo_codegen_only_do_not_use[*field];
                                     if let Some(name) = decl.name {
                                         let ty = fx.monomorphize(&ty);
-                                        let (var_scope, var_span) = fx.debug_loc(mir::SourceInfo {
-                                            span: decl.source_info.span,
-                                            scope: decl.visibility_scope,
-                                        });
+                                        let (var_scope, var_span) = fx.debug_loc(
+                                            mir::SourceInfo {
+                                                span: decl.source_info.span,
+                                                scope: decl.visibility_scope
+                                            },
+                                            mir);
                                         let var_scope = var_scope.unwrap_or(scope);
                                         Some((variant_idx, i, name, false, ty, var_scope, var_span))
                                     } else {

@@ -1,6 +1,6 @@
 use rustc::ty::{self, Instance, Ty};
 use rustc::ty::layout::{self, Align, TyLayout, LayoutOf, VariantIdx, HasTyCtxt};
-use rustc::mir;
+use rustc::mir::{self, Body};
 use rustc::mir::tcx::PlaceTy;
 use crate::MemFlags;
 use crate::common::IntPredicate;
@@ -435,6 +435,7 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
 impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
     pub fn codegen_place(
         &mut self,
+        mir: &Body<'tcx>,
         bx: &mut Bx,
         place_ref: &mir::PlaceRef<'_, 'tcx>
     ) -> PlaceRef<'tcx, Bx::Value> {
@@ -513,7 +514,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 projection: [proj_base @ .., mir::ProjectionElem::Deref],
             } => {
                 // Load the pointer from its location.
-                self.codegen_consume(bx, &mir::PlaceRef {
+                self.codegen_consume(mir, bx, &mir::PlaceRef {
                     base,
                     projection: proj_base,
                 }).deref(bx.cx())
@@ -523,7 +524,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 projection: [proj_base @ .., elem],
             } => {
                 // FIXME turn this recursion into iteration
-                let cg_base = self.codegen_place(bx, &mir::PlaceRef {
+                let cg_base = self.codegen_place(mir, bx, &mir::PlaceRef {
                     base,
                     projection: proj_base,
                 });
@@ -537,7 +538,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                         let index = &mir::Operand::Copy(
                             mir::Place::from(*index)
                         );
-                        let index = self.codegen_operand(bx, index);
+                        let index = self.codegen_operand(mir, bx, index);
                         let llindex = index.immediate();
                         cg_base.project_index(bx, llindex)
                     }
@@ -584,9 +585,9 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         result
     }
 
-    pub fn monomorphized_place_ty(&self, place_ref: &mir::PlaceRef<'_, 'tcx>) -> Ty<'tcx> {
+    pub fn monomorphized_place_ty(&self, place_ref: &mir::PlaceRef<'_, 'tcx>, mir: &Body<'tcx>) -> Ty<'tcx> {
         let tcx = self.cx.tcx();
-        let place_ty = mir::Place::ty_from(place_ref.base, place_ref.projection, self.mir.unwrap().body(), tcx);
+        let place_ty = mir::Place::ty_from(place_ref.base, place_ref.projection, mir, tcx);
         self.monomorphize(&place_ty.ty)
     }
 }
