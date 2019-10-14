@@ -23,10 +23,10 @@ use rustc::mir::traversal;
 use self::operand::{OperandRef, OperandValue};
 
 /// Master context for codegenning from MIR.
-pub struct FunctionCx<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
+pub struct FunctionCx<'a, 'b, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
     instance: Instance<'tcx>,
 
-//    mir: Option<&'a mut BodyCache<&'a mir::Body<'tcx>>>,
+    mir: &'b mir::Body<'tcx>,
 
     debug_context: FunctionDebugContext<Bx::DIScope>,
 
@@ -83,7 +83,7 @@ pub struct FunctionCx<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
     scopes: IndexVec<mir::SourceScope, debuginfo::MirDebugScope<Bx::DIScope>>,
 }
 
-impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
+impl<'a, 'b, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'b, 'tcx, Bx> {
     pub fn monomorphize<T>(&self, value: &T) -> T
         where T: TypeFoldable<'tcx>
     {
@@ -222,7 +222,7 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
 
     let mut fx = FunctionCx {
         instance,
-//        mir: Some(mir),
+        mir: mir.body(),
         llfn,
         fn_ty,
         cx,
@@ -418,9 +418,9 @@ fn create_funclets<'a, 'b, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
 /// Produces, for each argument, a `Value` pointing at the
 /// argument's value. As arguments are places, these are always
 /// indirect.
-fn arg_local_refs<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
+fn arg_local_refs<'a, 'b, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     bx: &mut Bx,
-    fx: &FunctionCx<'a, 'tcx, Bx>,
+    fx: &FunctionCx<'a, 'b, 'tcx, Bx>,
     mir: &Body<'tcx>,
     memory_locals: &BitSet<mir::Local>,
 ) -> Vec<LocalRef<'tcx, Bx::Value>> {
