@@ -16,12 +16,11 @@ use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::FxHashMap;
 use rustc::dep_graph::{DepNodeIndex, DepKind};
 use rustc::middle::lang_items;
-use rustc::mir::{self, interpret};
+use rustc::mir::{self, BodyCache, interpret, Promoted};
 use rustc::mir::interpret::AllocDecodingSession;
 use rustc::session::Session;
 use rustc::ty::{self, Ty, TyCtxt};
 use rustc::ty::codec::TyDecoder;
-use rustc::mir::{Body, Promoted};
 use rustc::util::captures::Captures;
 
 use std::io;
@@ -924,7 +923,7 @@ impl<'a, 'tcx> CrateMetadata {
             self.root.per_def.mir.get(self, id).is_some()
     }
 
-    crate fn get_optimized_mir(&self, tcx: TyCtxt<'tcx>, id: DefIndex) -> Body<'tcx> {
+    crate fn get_optimized_mir(&self, tcx: TyCtxt<'tcx>, id: DefIndex) -> BodyCache<'tcx> {
         self.root.per_def.mir.get(self, id)
             .filter(|_| !self.is_proc_macro(id))
             .unwrap_or_else(|| {
@@ -937,7 +936,7 @@ impl<'a, 'tcx> CrateMetadata {
         &self,
         tcx: TyCtxt<'tcx>,
         id: DefIndex,
-    ) -> IndexVec<Promoted, Body<'tcx>> {
+    ) -> IndexVec<Promoted, BodyCache<'tcx>> {
         self.root.per_def.promoted_mir.get(self, id)
             .filter(|_| !self.is_proc_macro(id))
             .unwrap_or_else(|| {

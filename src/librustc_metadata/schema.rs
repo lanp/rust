@@ -247,8 +247,8 @@ crate struct LazyPerDefTables<'tcx> {
     pub predicates_defined_on: Lazy!(PerDefTable<Lazy!(ty::GenericPredicates<'tcx>)>),
     pub super_predicates: Lazy!(PerDefTable<Lazy!(ty::GenericPredicates<'tcx>)>),
 
-    pub mir: Lazy!(PerDefTable<Lazy!(mir::Body<'tcx>)>),
-    pub promoted_mir: Lazy!(PerDefTable<Lazy!(IndexVec<mir::Promoted, mir::Body<'tcx>>)>),
+    pub mir: Lazy!(PerDefTable<Lazy!(mir::BodyCache<'tcx>)>),
+    pub promoted_mir: Lazy!(PerDefTable<Lazy!(IndexVec<mir::Promoted, mir::BodyCache<'tcx>>)>),
 }
 
 #[derive(Copy, Clone, RustcEncodable, RustcDecodable)]

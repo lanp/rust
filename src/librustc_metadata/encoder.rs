@@ -80,8 +80,8 @@ struct PerDefTables<'tcx> {
     predicates_defined_on: PerDefTable<Lazy<ty::GenericPredicates<'tcx>>>,
     super_predicates: PerDefTable<Lazy<ty::GenericPredicates<'tcx>>>,
 
-    mir: PerDefTable<Lazy<mir::Body<'tcx>>>,
-    promoted_mir: PerDefTable<Lazy<IndexVec<mir::Promoted, mir::Body<'tcx>>>>,
+    mir: PerDefTable<Lazy<mir::BodyCache<'tcx>>>,
+    promoted_mir: PerDefTable<Lazy<IndexVec<mir::Promoted, mir::BodyCache<'tcx>>>>,
 }
 
 macro_rules! encoder_methods {

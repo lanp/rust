@@ -1,6 +1,6 @@
 use rustc::ty::{self, Ty, TypeFoldable, UpvarSubsts, Instance};
 use rustc::ty::layout::{TyLayout, HasTyCtxt, FnTypeExt};
-use rustc::mir::{self, Body, BodyCache};
+use rustc::mir::{self, Body, ReadOnlyBodyCache};
 use rustc::session::config::DebugInfo;
 use rustc_target::abi::call::{FnType, PassMode};
 use rustc_target::abi::{Variants, VariantIdx};
@@ -23,10 +23,10 @@ use rustc::mir::traversal;
 use self::operand::{OperandRef, OperandValue};
 
 /// Master context for codegenning from MIR.
-pub struct FunctionCx<'a, 'b, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
+pub struct FunctionCx<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
     instance: Instance<'tcx>,
 
-    mir: &'b mir::ReadOnlyBodyCache<'a, 'tcx>,
+    mir: mir::ReadOnlyBodyCache<'a, 'tcx>,
 
     debug_context: FunctionDebugContext<Bx::DIScope>,
 
@@ -83,7 +83,7 @@ pub struct FunctionCx<'a, 'b, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
     scopes: IndexVec<mir::SourceScope, debuginfo::MirDebugScope<Bx::DIScope>>,
 }
 
-impl<'a, 'b, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'b, 'tcx, Bx> {
+impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
     pub fn monomorphize<T>(&self, value: &T) -> T
         where T: TypeFoldable<'tcx>
     {
@@ -184,7 +184,7 @@ impl<'a, 'tcx, V: CodegenObject> LocalRef<'tcx, V> {
 pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     cx: &'a Bx::CodegenCx,
     llfn: Bx::Function,
-    mut mir: BodyCache<&'a Body<'tcx>>,
+    mir: ReadOnlyBodyCache<'a, 'tcx>,
     instance: Instance<'tcx>,
     sig: ty::FnSig<'tcx>,
 ) {
@@ -219,10 +219,9 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     let scopes = cx.create_mir_scopes(&mir, &mut debug_context);
     let (landing_pads, funclets) = create_funclets(&mir, &mut bx, &cleanup_kinds, &block_bxs);
     let mir_body = mir.body();
-    let readonly_mir = mir.read_only();
     let mut fx = FunctionCx {
         instance,
-        mir: &readonly_mir,
+        mir,
         llfn,
         fn_ty,
         cx,
@@ -417,9 +416,9 @@ fn create_funclets<'a, 'b, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
 /// Produces, for each argument, a `Value` pointing at the
 /// argument's value. As arguments are places, these are always
 /// indirect.
-fn arg_local_refs<'a, 'b, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
+fn arg_local_refs<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     bx: &mut Bx,
-    fx: &FunctionCx<'a, 'b, 'tcx, Bx>,
+    fx: &FunctionCx<'a, 'tcx, Bx>,
     memory_locals: &BitSet<mir::Local>,
 ) -> Vec<LocalRef<'tcx, Bx::Value>> {
     let tcx = fx.cx.tcx();

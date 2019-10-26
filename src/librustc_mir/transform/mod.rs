@@ -1,7 +1,7 @@
 use crate::{build, shim};
 use rustc_index::vec::IndexVec;
 use rustc::hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
-use rustc::mir::{Body, MirPhase, Promoted};
+use rustc::mir::{BodyCache, MirPhase, Promoted};
 use rustc::ty::{TyCtxt, InstanceDef};
 use rustc::ty::query::Providers;
 use rustc::ty::steal::Steal;
@@ -96,7 +96,7 @@ fn mir_keys(tcx: TyCtxt<'_>, krate: CrateNum) -> &DefIdSet {
     tcx.arena.alloc(set)
 }
 
-fn mir_built(tcx: TyCtxt<'_>, def_id: DefId) -> &Steal<Body<'_>> {
+fn mir_built(tcx: TyCtxt<'_>, def_id: DefId) -> &Steal<BodyCache<'_>> {
     let mir = build::mir_build(tcx, def_id);
     tcx.alloc_steal_mir(mir)
 }
@@ -143,12 +143,12 @@ pub trait MirPass<'tcx> {
         default_name::<Self>()
     }
 
-    fn run_pass(&self, tcx: TyCtxt<'tcx>, source: MirSource<'tcx>, body: &mut Body<'tcx>);
+    fn run_pass(&self, tcx: TyCtxt<'tcx>, source: MirSource<'tcx>, body: &mut BodyCache<'tcx>);
 }
 
 pub fn run_passes(
     tcx: TyCtxt<'tcx>,
-    body: &mut Body<'tcx>,
+    body: &mut BodyCache<'tcx>,
     instance: InstanceDef<'tcx>,
     promoted: Option<Promoted>,
     mir_phase: MirPhase,
@@ -184,24 +184,24 @@ pub fn run_passes(
     body.phase = mir_phase;
 }
 
-fn mir_const(tcx: TyCtxt<'_>, def_id: DefId) -> &Steal<Body<'_>> {
+fn mir_const(tcx: TyCtxt<'_>, def_id: DefId) -> &Steal<BodyCache<'_>> {
     // Unsafety check uses the raw mir, so make sure it is run
     let _ = tcx.unsafety_check_result(def_id);
 
-    let mut body = tcx.mir_built(def_id).steal();
-    run_passes(tcx, &mut body, InstanceDef::Item(def_id), None, MirPhase::Const, &[
+    let mut body_cache = tcx.mir_built(def_id).steal();
+    run_passes(tcx, &mut body_cache, InstanceDef::Item(def_id), None, MirPhase::Const, &[
         // What we need to do constant evaluation.
         &simplify::SimplifyCfg::new("initial"),
         &rustc_peek::SanityCheck,
         &uniform_array_move_out::UniformArrayMoveOut,
     ]);
-    tcx.alloc_steal_mir(body)
+    tcx.alloc_steal_mir(body_cache)
 }
 
 fn mir_validated(
     tcx: TyCtxt<'tcx>,
     def_id: DefId,
-) -> (&'tcx Steal<Body<'tcx>>, &'tcx Steal<IndexVec<Promoted, Body<'tcx>>>) {
+) -> (&'tcx Steal<BodyCache<'tcx>>, &'tcx Steal<IndexVec<Promoted, BodyCache<'tcx>>>) {
     let hir_id = tcx.hir().as_local_hir_id(def_id).unwrap();
     if let hir::BodyOwnerKind::Const = tcx.hir().body_owner_kind(hir_id) {
         // Ensure that we compute the `mir_const_qualif` for constants at
@@ -209,25 +209,25 @@ fn mir_validated(
         let _ = tcx.mir_const_qualif(def_id);
     }
 
-    let mut body = tcx.mir_const(def_id).steal();
+    let mut body_cache = tcx.mir_const(def_id).steal();
     let qualify_and_promote_pass = qualify_consts::QualifyAndPromoteConstants::default();
-    run_passes(tcx, &mut body, InstanceDef::Item(def_id), None, MirPhase::Validated, &[
+    run_passes(tcx, &mut body_cache, InstanceDef::Item(def_id), None, MirPhase::Validated, &[
         // What we need to run borrowck etc.
         &qualify_and_promote_pass,
         &simplify::SimplifyCfg::new("qualify-consts"),
     ]);
 
-    let promoted = qualify_and_promote_pass.promoted.into_inner();
-    (tcx.alloc_steal_mir(body), tcx.alloc_steal_promoted(promoted))
+    let promoted = qualify_and_promote_pass.promoted_cache.into_inner();
+    (tcx.alloc_steal_mir(body_cache), tcx.alloc_steal_promoted(promoted))
 }
 
 fn run_optimization_passes<'tcx>(
     tcx: TyCtxt<'tcx>,
-    body: &mut Body<'tcx>,
+    body_cache: &mut BodyCache<'tcx>,
     def_id: DefId,
     promoted: Option<Promoted>,
 ) {
-    run_passes(tcx, body, InstanceDef::Item(def_id), promoted, MirPhase::Optimized, &[
+    run_passes(tcx, body_cache, InstanceDef::Item(def_id), promoted, MirPhase::Optimized, &[
         // Remove all things only needed by analysis
         &no_landing_pads::NoLandingPads::new(tcx),
         &simplify_branches::SimplifyBranches::new("initial"),
@@ -280,7 +280,7 @@ fn run_optimization_passes<'tcx>(
     ]);
 }
 
-fn optimized_mir(tcx: TyCtxt<'_>, def_id: DefId) -> &Body<'_> {
+fn optimized_mir(tcx: TyCtxt<'_>, def_id: DefId) -> &BodyCache<'_> {
     if tcx.is_constructor(def_id) {
         // There's no reason to run all of the MIR passes on constructors when
         // we can just output the MIR we want directly. This also saves const
@@ -294,12 +294,12 @@ fn optimized_mir(tcx: TyCtxt<'_>, def_id: DefId) -> &Body<'_> {
     tcx.ensure().mir_borrowck(def_id);
 
     let (body, _) = tcx.mir_validated(def_id);
-    let mut body = body.steal();
-    run_optimization_passes(tcx, &mut body, def_id, None);
-    tcx.arena.alloc(body)
+    let mut body_cache = body.steal();
+    run_optimization_passes(tcx, &mut body_cache, def_id, None);
+    tcx.arena.alloc(body_cache)
 }
 
-fn promoted_mir<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> &'tcx IndexVec<Promoted, Body<'tcx>> {
+fn promoted_mir<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> &'tcx IndexVec<Promoted, BodyCache<'tcx>> {
     if tcx.is_constructor(def_id) {
         return tcx.intern_promoted(IndexVec::new());
     }
@@ -308,8 +308,8 @@ fn promoted_mir<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> &'tcx IndexVec<Promot
     let (_, promoted) = tcx.mir_validated(def_id);
     let mut promoted = promoted.steal();
 
-    for (p, mut body) in promoted.iter_enumerated_mut() {
-        run_optimization_passes(tcx, &mut body, def_id, Some(p));
+    for (p, mut body_cache) in promoted.iter_enumerated_mut() {
+        run_optimization_passes(tcx, &mut body_cache, def_id, Some(p));
     }
 
     tcx.intern_promoted(promoted)
