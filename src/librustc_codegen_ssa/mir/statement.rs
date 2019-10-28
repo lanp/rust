@@ -27,7 +27,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                         }
                         LocalRef::Operand(None) => {
                             let (mut bx, operand) = self.codegen_rvalue_operand(bx, rvalue);
-                            if let Some(name) = mir.local_decls[index].name {
+                            if let Some(name) = self.mir.local_decls[index].name {
                                 match operand.val {
                                     OperandValue::Ref(x, ..) |
                                     OperandValue::Immediate(x) => {
