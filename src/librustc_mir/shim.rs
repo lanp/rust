@@ -26,7 +26,7 @@ pub fn provide(providers: &mut Providers<'_>) {
     providers.mir_shims = make_shim;
 }
 
-fn make_shim<'tcx>(tcx: TyCtxt<'tcx>, instance: ty::InstanceDef<'tcx>) -> &'tcx Body<'tcx> {
+fn make_shim<'tcx>(tcx: TyCtxt<'tcx>, instance: ty::InstanceDef<'tcx>) -> &'tcx BodyCache<'tcx> {
     debug!("make_shim({:?})", instance);
 
     let mut result = match instance {
@@ -113,7 +113,7 @@ fn make_shim<'tcx>(tcx: TyCtxt<'tcx>, instance: ty::InstanceDef<'tcx>) -> &'tcx 
             bug!("creating shims from intrinsics ({:?}) is unsupported", instance)
         }
     };
-    debug!("make_shim({:?}) = untransformed {:?}", instance, result);
+    debug!("make_shim({:?}) = untransformed {:?}", instance, result.body());
 
     run_passes(tcx, &mut result, instance, None, MirPhase::Const, &[
         &add_moves_for_packed_drops::AddMovesForPackedDrops,
@@ -123,8 +123,9 @@ fn make_shim<'tcx>(tcx: TyCtxt<'tcx>, instance: ty::InstanceDef<'tcx>) -> &'tcx 
         &add_call_guards::CriticalCallEdges,
     ]);
 
-    debug!("make_shim({:?}) = {:?}", instance, result);
+    debug!("make_shim({:?}) = {:?}", instance, result.body());
 
+    result.ensure_predecessors();
     tcx.arena.alloc(result)
 }
 
@@ -166,7 +167,7 @@ fn local_decls_for_sig<'tcx>(sig: &ty::FnSig<'tcx>, span: Span)
         .collect()
 }
 
-fn build_drop_shim<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, ty: Option<Ty<'tcx>>) -> Body<'tcx> {
+fn build_drop_shim<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, ty: Option<Ty<'tcx>>) -> BodyCache<'tcx> {
     debug!("build_drop_shim(def_id={:?}, ty={:?})", def_id, ty);
 
     // Check if this is a generator, if so, return the drop glue for it
@@ -198,7 +199,7 @@ fn build_drop_shim<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, ty: Option<Ty<'tcx>>)
     block(&mut blocks, TerminatorKind::Goto { target: return_block });
     block(&mut blocks, TerminatorKind::Return);
 
-    let mut body = Body::new(
+    let body = Body::new(
         blocks,
         IndexVec::from_elem_n(
             SourceScopeData { span: span, parent_scope: None }, 1
@@ -213,12 +214,14 @@ fn build_drop_shim<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, ty: Option<Ty<'tcx>>)
         vec![],
     );
 
+    let mut body_cache = BodyCache::new(body);
+
     if let Some(..) = ty {
         // The first argument (index 0), but add 1 for the return value.
         let dropee_ptr = Place::from(Local::new(1+0));
         if tcx.sess.opts.debugging_opts.mir_emit_retag {
             // Function arguments should be retagged, and we make this one raw.
-            body.basic_blocks_mut()[START_BLOCK].statements.insert(0, Statement {
+            body_cache.basic_blocks_mut()[START_BLOCK].statements.insert(0, Statement {
                 source_info,
                 kind: StatementKind::Retag(RetagKind::Raw, box(dropee_ptr.clone())),
             });
@@ -226,8 +229,8 @@ fn build_drop_shim<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, ty: Option<Ty<'tcx>>)
         let patch = {
             let param_env = tcx.param_env(def_id).with_reveal_all();
             let mut elaborator = DropShimElaborator {
-                body: &body,
-                patch: MirPatch::new(&body),
+                body: body_cache.body(),
+                patch: MirPatch::new(body_cache.body()),
                 tcx,
                 param_env
             };
@@ -244,10 +247,10 @@ fn build_drop_shim<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, ty: Option<Ty<'tcx>>)
             );
             elaborator.patch
         };
-        patch.apply(&mut body);
+        patch.apply(&mut body_cache);
     }
 
-    body
+    body_cache
 }
 
 pub struct DropShimElaborator<'a, 'tcx> {
@@ -303,7 +306,7 @@ impl<'a, 'tcx> DropElaborator<'a, 'tcx> for DropShimElaborator<'a, 'tcx> {
 }
 
 /// Builds a `Clone::clone` shim for `self_ty`. Here, `def_id` is `Clone::clone`.
-fn build_clone_shim<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, self_ty: Ty<'tcx>) -> Body<'tcx> {
+fn build_clone_shim<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, self_ty: Ty<'tcx>) -> BodyCache<'tcx> {
     debug!("build_clone_shim(def_id={:?})", def_id);
 
     let param_env = tcx.param_env(def_id);
@@ -332,7 +335,7 @@ fn build_clone_shim<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, self_ty: Ty<'tcx>) -
         }
     };
 
-    builder.into_mir()
+    BodyCache::new(builder.into_mir())
 }
 
 struct CloneShimBuilder<'tcx> {
@@ -701,7 +704,7 @@ fn build_call_shim<'tcx>(
     rcvr_adjustment: Adjustment,
     call_kind: CallKind,
     untuple_args: Option<&[Ty<'tcx>]>,
-) -> Body<'tcx> {
+) -> BodyCache<'tcx> {
     debug!("build_call_shim(def_id={:?}, rcvr_adjustment={:?}, \
             call_kind={:?}, untuple_args={:?})",
            def_id, rcvr_adjustment, call_kind, untuple_args);
@@ -843,10 +846,10 @@ fn build_call_shim<'tcx>(
     if let Abi::RustCall = sig.abi {
         body.spread_arg = Some(Local::new(sig.inputs().len()));
     }
-    body
+    BodyCache::new(body)
 }
 
-pub fn build_adt_ctor(tcx: TyCtxt<'_>, ctor_id: DefId) -> &Body<'_> {
+pub fn build_adt_ctor(tcx: TyCtxt<'_>, ctor_id: DefId) -> &BodyCache<'_> {
     debug_assert!(tcx.is_constructor(ctor_id));
 
     let span = tcx.hir().span_if_local(ctor_id)
@@ -938,5 +941,7 @@ pub fn build_adt_ctor(tcx: TyCtxt<'_>, ctor_id: DefId) -> &Body<'_> {
         |_, _| Ok(()),
     );
 
-    tcx.arena.alloc(body)
+    let mut body_cache = BodyCache::new(body);
+    body_cache.ensure_predecessors();
+    tcx.arena.alloc(body_cache)
 }

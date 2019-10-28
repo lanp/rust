@@ -1738,22 +1738,22 @@ fn mir_const_qualif(tcx: TyCtxt<'_>, def_id: DefId) -> (u8, &BitSet<Local>) {
 }
 
 pub struct QualifyAndPromoteConstants<'tcx> {
-    pub promoted: Cell<IndexVec<Promoted, Body<'tcx>>>,
+    pub promoted_cache: Cell<IndexVec<Promoted, BodyCache<'tcx>>>,
 }
 
 impl<'tcx> Default for QualifyAndPromoteConstants<'tcx> {
     fn default() -> Self {
         QualifyAndPromoteConstants {
-            promoted: Cell::new(IndexVec::new()),
+            promoted_cache: Cell::new(IndexVec::new()),
         }
     }
 }
 
 impl<'tcx> MirPass<'tcx> for QualifyAndPromoteConstants<'tcx> {
-    fn run_pass(&self, tcx: TyCtxt<'tcx>, src: MirSource<'tcx>, body: &mut Body<'tcx>) {
+    fn run_pass(&self, tcx: TyCtxt<'tcx>, src: MirSource<'tcx>, body_cache: &mut BodyCache<'tcx>) {
         // There's not really any point in promoting errorful MIR.
-        if body.return_ty().references_error() {
-            tcx.sess.delay_span_bug(body.span, "QualifyAndPromoteConstants: MIR had errors");
+        if body_cache.return_ty().references_error() {
+            tcx.sess.delay_span_bug(body_cache.span, "QualifyAndPromoteConstants: MIR had errors");
             return;
         }
 
@@ -1771,7 +1771,7 @@ impl<'tcx> MirPass<'tcx> for QualifyAndPromoteConstants<'tcx> {
             // This is ugly because Checker holds onto mir,
             // which can't be mutated until its scope ends.
             let (temps, candidates) = {
-                let mut checker = Checker::new(tcx, def_id, body, mode);
+                let mut checker = Checker::new(tcx, def_id, body_cache, mode);
                 if let Mode::ConstFn = mode {
                     let use_min_const_fn_checks =
                         !tcx.sess.opts.debugging_opts.unleash_the_miri_inside_of_you &&
@@ -1779,7 +1779,7 @@ impl<'tcx> MirPass<'tcx> for QualifyAndPromoteConstants<'tcx> {
                     if use_min_const_fn_checks {
                         // Enforce `min_const_fn` for stable `const fn`s.
                         use super::qualify_min_const_fn::is_min_const_fn;
-                        if let Err((span, err)) = is_min_const_fn(tcx, def_id, body) {
+                        if let Err((span, err)) = is_min_const_fn(tcx, def_id, body_cache) {
                             error_min_const_fn_violation(tcx, span, err);
                             return;
                         }
@@ -1803,22 +1803,22 @@ impl<'tcx> MirPass<'tcx> for QualifyAndPromoteConstants<'tcx> {
             };
 
             // Do the actual promotion, now that we know what's viable.
-            self.promoted.set(
-                promote_consts::promote_candidates(def_id, body, tcx, temps, candidates)
+            self.promoted_cache.set(
+                promote_consts::promote_candidates(def_id, body_cache, tcx, temps, candidates)
             );
         } else {
-            check_short_circuiting_in_const_local(tcx, body, mode);
+            check_short_circuiting_in_const_local(tcx, body_cache, mode);
 
             let promoted_temps = match mode {
                 Mode::Const => tcx.mir_const_qualif(def_id).1,
-                _ => Checker::new(tcx, def_id, body, mode).check_const().1,
+                _ => Checker::new(tcx, def_id, body_cache, mode).check_const().1,
             };
-            remove_drop_and_storage_dead_on_promoted_locals(body, promoted_temps);
+            remove_drop_and_storage_dead_on_promoted_locals(body_cache, promoted_temps);
         }
 
         if mode == Mode::Static && !tcx.has_attr(def_id, sym::thread_local) {
             // `static`s (not `static mut`s) which are not `#[thread_local]` must be `Sync`.
-            check_static_is_sync(tcx, body, hir_id);
+            check_static_is_sync(tcx, body_cache, hir_id);
         }
     }
 }
@@ -1878,12 +1878,12 @@ fn check_short_circuiting_in_const_local(tcx: TyCtxt<'_>, body: &mut Body<'tcx>,
 /// is `'static`, we don't have to create promoted MIR fragments,
 /// just remove `Drop` and `StorageDead` on "promoted" locals.
 fn remove_drop_and_storage_dead_on_promoted_locals(
-    body: &mut Body<'tcx>,
+    body_cache: &mut BodyCache<'tcx>,
     promoted_temps: &BitSet<Local>,
 ) {
     debug!("run_pass: promoted_temps={:?}", promoted_temps);
 
-    for block in body.basic_blocks_mut() {
+    for block in body_cache.basic_blocks_mut() {
         block.statements.retain(|statement| {
             match statement.kind {
                 StatementKind::StorageDead(index) => !promoted_temps.contains(index),

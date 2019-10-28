@@ -14,14 +14,13 @@ use super::FunctionCx;
 use crate::traits::*;
 
 pub fn non_ssa_locals<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
-    fx: &FunctionCx<'a, 'tcx, Bx>,
+    fx: &FunctionCx<'a, 'tcx, Bx>
 ) -> BitSet<mir::Local> {
-    let mir = fx.mir;
     let mut analyzer = LocalAnalyzer::new(fx);
 
-    analyzer.visit_body(mir);
+    analyzer.visit_body(fx.mir);
 
-    for (index, (ty, span)) in mir.local_decls.iter()
+    for (index, (ty, span)) in fx.mir.local_decls.iter()
         .map(|l| (l.ty, l.source_info.span))
         .enumerate()
     {
@@ -56,13 +55,14 @@ struct LocalAnalyzer<'mir, 'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
     first_assignment: IndexVec<mir::Local, Location>,
 }
 
-impl<Bx: BuilderMethods<'a, 'tcx>> LocalAnalyzer<'mir, 'a, 'tcx, Bx> {
+impl<'mir, 'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> LocalAnalyzer<'mir, 'a, 'tcx, Bx> {
     fn new(fx: &'mir FunctionCx<'a, 'tcx, Bx>) -> Self {
         let invalid_location =
             mir::BasicBlock::new(fx.mir.basic_blocks().len()).start_location();
+        let dominators = fx.mir.dominators();
         let mut analyzer = LocalAnalyzer {
             fx,
-            dominators: fx.mir.dominators(),
+            dominators,
             non_ssa_locals: BitSet::new_empty(fx.mir.local_decls.len()),
             first_assignment: IndexVec::from_elem(invalid_location, &fx.mir.local_decls)
         };
@@ -114,7 +114,7 @@ impl<Bx: BuilderMethods<'a, 'tcx>> LocalAnalyzer<'mir, 'a, 'tcx, Bx> {
             };
             if is_consume {
                 let base_ty =
-                    mir::Place::ty_from(place_ref.base, proj_base, self.fx.mir, cx.tcx());
+                    mir::Place::ty_from(place_ref.base, proj_base, self.fx.mir.body(), cx.tcx());
                 let base_ty = self.fx.monomorphize(&base_ty);
 
                 // ZSTs don't require any actual memory access.

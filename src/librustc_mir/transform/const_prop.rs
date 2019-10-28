@@ -7,9 +7,10 @@ use std::cell::Cell;
 use rustc::hir::def::DefKind;
 use rustc::hir::def_id::DefId;
 use rustc::mir::{
-    AggregateKind, Constant, Location, Place, PlaceBase, Body, Operand, Rvalue, Local, UnOp,
-    StatementKind, Statement, LocalKind, TerminatorKind, Terminator,  ClearCrossCrate, SourceInfo,
-    BinOp, SourceScope, SourceScopeLocalData, LocalDecl, BasicBlock,
+    AggregateKind, Constant, Location, Place, PlaceBase, Body, BodyCache, Operand, Local, UnOp,
+    Rvalue, StatementKind, Statement, LocalKind, TerminatorKind, Terminator,  ClearCrossCrate,
+    SourceInfo, BinOp, SourceScope, SourceScopeLocalData, LocalDecl, BasicBlock, ReadOnlyBodyCache,
+    read_only
 };
 use rustc::mir::visit::{
     Visitor, PlaceContext, MutatingUseContext, MutVisitor, NonMutatingUseContext,
@@ -37,7 +38,7 @@ use crate::transform::{MirPass, MirSource};
 pub struct ConstProp;
 
 impl<'tcx> MirPass<'tcx> for ConstProp {
-    fn run_pass(&self, tcx: TyCtxt<'tcx>, source: MirSource<'tcx>, body: &mut Body<'tcx>) {
+    fn run_pass(&self, tcx: TyCtxt<'tcx>, source: MirSource<'tcx>, body_cache: &mut BodyCache<'tcx>) {
         // will be evaluated by miri and produce its errors there
         if source.promoted.is_some() {
             return;
@@ -72,19 +73,19 @@ impl<'tcx> MirPass<'tcx> for ConstProp {
 
         // Steal some data we need from `body`.
         let source_scope_local_data = std::mem::replace(
-            &mut body.source_scope_local_data,
+            &mut body_cache.source_scope_local_data,
             ClearCrossCrate::Clear
         );
 
         let dummy_body =
             &Body::new(
-                body.basic_blocks().clone(),
+                body_cache.basic_blocks().clone(),
                 Default::default(),
                 ClearCrossCrate::Clear,
                 None,
-                body.local_decls.clone(),
+                body_cache.local_decls.clone(),
                 Default::default(),
-                body.arg_count,
+                body_cache.arg_count,
                 Default::default(),
                 tcx.def_span(source.def_id()),
                 Default::default(),
@@ -95,18 +96,18 @@ impl<'tcx> MirPass<'tcx> for ConstProp {
         // That would require an uniform one-def no-mutation analysis
         // and RPO (or recursing when needing the value of a local).
         let mut optimization_finder = ConstPropagator::new(
-            body,
+            read_only!(body_cache),
             dummy_body,
             source_scope_local_data,
             tcx,
             source
         );
-        optimization_finder.visit_body(body);
+        optimization_finder.visit_body(body_cache);
 
         // put back the data we stole from `mir`
         let source_scope_local_data = optimization_finder.release_stolen_data();
         std::mem::replace(
-            &mut body.source_scope_local_data,
+            &mut body_cache.source_scope_local_data,
             source_scope_local_data
         );
 
@@ -296,7 +297,7 @@ impl<'mir, 'tcx> HasTyCtxt<'tcx> for ConstPropagator<'mir, 'tcx> {
 
 impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
     fn new(
-        body: &Body<'tcx>,
+        body_cache: ReadOnlyBodyCache<'_, 'tcx>,
         dummy_body: &'mir Body<'tcx>,
         source_scope_local_data: ClearCrossCrate<IndexVec<SourceScope, SourceScopeLocalData>>,
         tcx: TyCtxt<'tcx>,
@@ -306,7 +307,7 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
         let param_env = tcx.param_env(def_id);
         let span = tcx.def_span(def_id);
         let mut ecx = InterpCx::new(tcx.at(span), param_env, ConstPropMachine, ());
-        let can_const_prop = CanConstProp::check(body);
+        let can_const_prop = CanConstProp::check(body_cache);
 
         ecx.push_stack_frame(
             Instance::new(def_id, &InternalSubsts::identity_for_item(tcx, def_id)),
@@ -326,7 +327,7 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
             can_const_prop,
             source_scope_local_data,
             //FIXME(wesleywiser) we can't steal this because `Visitor::super_visit_body()` needs it
-            local_decls: body.local_decls.clone(),
+            local_decls: body_cache.local_decls.clone(),
         }
     }
 
@@ -632,10 +633,10 @@ struct CanConstProp {
 
 impl CanConstProp {
     /// returns true if `local` can be propagated
-    fn check(body: &Body<'_>) -> IndexVec<Local, bool> {
+    fn check(body_cache: ReadOnlyBodyCache<'_, '_>) -> IndexVec<Local, bool> {
         let mut cpv = CanConstProp {
-            can_const_prop: IndexVec::from_elem(true, &body.local_decls),
-            found_assignment: IndexVec::from_elem(false, &body.local_decls),
+            can_const_prop: IndexVec::from_elem(true, &body_cache.local_decls),
+            found_assignment: IndexVec::from_elem(false, &body_cache.local_decls),
         };
         for (local, val) in cpv.can_const_prop.iter_enumerated_mut() {
             // cannot use args at all
@@ -643,13 +644,13 @@ impl CanConstProp {
             //        lint for x != y
             // FIXME(oli-obk): lint variables until they are used in a condition
             // FIXME(oli-obk): lint if return value is constant
-            *val = body.local_kind(local) == LocalKind::Temp;
+            *val = body_cache.local_kind(local) == LocalKind::Temp;
 
             if !*val {
                 trace!("local {:?} can't be propagated because it's not a temporary", local);
             }
         }
-        cpv.visit_body(body);
+        cpv.visit_body(body_cache);
         cpv.can_const_prop
     }
 }

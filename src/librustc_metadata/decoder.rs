@@ -16,12 +16,11 @@ use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::FxHashMap;
 use rustc::dep_graph::{DepNodeIndex, DepKind};
 use rustc::middle::lang_items;
-use rustc::mir::{self, interpret};
+use rustc::mir::{self, BodyCache, interpret, Promoted};
 use rustc::mir::interpret::AllocDecodingSession;
 use rustc::session::Session;
 use rustc::ty::{self, Ty, TyCtxt};
 use rustc::ty::codec::TyDecoder;
-use rustc::mir::{Body, Promoted};
 use rustc::util::captures::Captures;
 
 use std::io;
@@ -924,26 +923,32 @@ impl<'a, 'tcx> CrateMetadata {
             self.root.per_def.mir.get(self, id).is_some()
     }
 
-    crate fn get_optimized_mir(&self, tcx: TyCtxt<'tcx>, id: DefIndex) -> Body<'tcx> {
-        self.root.per_def.mir.get(self, id)
+    crate fn get_optimized_mir(&self, tcx: TyCtxt<'tcx>, id: DefIndex) -> BodyCache<'tcx> {
+        let mut cache = self.root.per_def.mir.get(self, id)
             .filter(|_| !self.is_proc_macro(id))
             .unwrap_or_else(|| {
                 bug!("get_optimized_mir: missing MIR for `{:?}`", self.local_def_id(id))
             })
-            .decode((self, tcx))
+            .decode((self, tcx));
+        cache.ensure_predecessors();
+        cache
     }
 
     crate fn get_promoted_mir(
         &self,
         tcx: TyCtxt<'tcx>,
         id: DefIndex,
-    ) -> IndexVec<Promoted, Body<'tcx>> {
-        self.root.per_def.promoted_mir.get(self, id)
+    ) -> IndexVec<Promoted, BodyCache<'tcx>> {
+        let mut cache = self.root.per_def.promoted_mir.get(self, id)
             .filter(|_| !self.is_proc_macro(id))
             .unwrap_or_else(|| {
                 bug!("get_promoted_mir: missing MIR for `{:?}`", self.local_def_id(id))
             })
-            .decode((self, tcx))
+            .decode((self, tcx));
+        for body_cache in cache.iter_mut() {
+            body_cache.ensure_predecessors();
+        }
+        cache
     }
 
     crate fn mir_const_qualif(&self, id: DefIndex) -> u8 {

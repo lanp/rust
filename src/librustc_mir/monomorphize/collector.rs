@@ -1251,14 +1251,15 @@ fn collect_neighbours<'tcx>(
     output: &mut Vec<MonoItem<'tcx>>,
 ) {
     debug!("collect_neighbours: {:?}", instance.def_id());
-    let body = tcx.instance_mir(instance.def);
+    let body_cache = tcx.instance_mir(instance.def);
+    let body = body_cache.body();
 
     MirNeighborCollector {
         tcx,
         body: &body,
         output,
         param_substs: instance.substs,
-    }.visit_body(&body);
+    }.visit_body(body_cache);
 }
 
 fn def_id_to_string(tcx: TyCtxt<'_>, def_id: DefId) -> String {
