@@ -9,7 +9,8 @@ use rustc::hir::def_id::DefId;
 use rustc::mir::{
     AggregateKind, Constant, Location, Place, PlaceBase, Body, BodyCache, Operand, Local, UnOp,
     Rvalue. StatementKind, Statement, LocalKind, TerminatorKind, Terminator,  ClearCrossCrate,
-    SourceInfo, BinOp, SourceScope, SourceScopeLocalData, LocalDecl, BasicBlock, ReadOnlyBodyCache
+    SourceInfo, BinOp, SourceScope, SourceScopeLocalData, LocalDecl, BasicBlock, ReadOnlyBodyCache,
+    read_only
 };
 use rustc::mir::visit::{
     Visitor, PlaceContext, MutatingUseContext, MutVisitor, NonMutatingUseContext,
@@ -95,7 +96,7 @@ impl<'tcx> MirPass<'tcx> for ConstProp {
         // That would require an uniform one-def no-mutation analysis
         // and RPO (or recursing when needing the value of a local).
         let mut optimization_finder = ConstPropagator::new(
-            body_cache.read_only(),
+            read_only!(body_cache),
             dummy_body,
             source_scope_local_data,
             tcx,
@@ -295,7 +296,7 @@ impl<'mir, 'tcx> HasTyCtxt<'tcx> for ConstPropagator<'mir, 'tcx> {
 
 impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
     fn new(
-        body_cache: ReadOnlyBodyCache<'mir, 'tcx>,
+        body_cache: ReadOnlyBodyCache<'_, 'tcx>,
         dummy_body: &'mir Body<'tcx>,
         source_scope_local_data: ClearCrossCrate<IndexVec<SourceScope, SourceScopeLocalData>>,
         tcx: TyCtxt<'tcx>,
